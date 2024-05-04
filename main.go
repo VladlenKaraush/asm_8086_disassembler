@@ -62,61 +62,89 @@ func parseImmediateAddToReg(bytes []byte) (command, int) {
 	dataStr := strconv.Itoa(int(bytes[2]))
 	dataLen := 1
 	cmdBytes := bytes[1] >> 3 & 0b111
-	// if word == 1 {
-	// 	dataStr = strconv.Itoa(int(binary.LittleEndian.Uint16(bytes[2:4])))
-	// 	dataLen = 2
-	// }
-	// add byte [bx], 34
-	// [10000000 00000111 00100010 10000011] bytes
-	// cmd := command{immediateOpTable[cmdBytes], dataStr, regTable[rm<<1|word]}
+	isWord, isByte := false, false
 
-	// parsing [10000011 10000010 11101000 00000011] bytes
-	// s = 1, w = 1, mod = 10, rm = 010
-	// immediate add to reg cmd='add word [bp + si], 232', word=1, reg=10 len=1
-	cmd := command{immediateOpTable[cmdBytes], dataStr, "[" + sourceAddrTable[rm] + "]"}
+	// parsing [10000000 00111111 00100010 10000011 00111110 11100010] bytes
+	// immediate add to reg cmd='cmp byte [bx], 34', word=0, reg=111 len=1
+	//
+	// parsing [10000011 00111110 11100010 00010010 00011101 00111011] bytes
+	// immediate add to reg cmd='cmp [bp], 226', word=1, reg=110 len=1
+
+	cmd := command{immediateOpTable[cmdBytes], dataStr, sourceAddrTable[rm]}
 	var disp uint64
 	switch mod {
 	case 0b11:
-		cmd.dest = sourceAddrTable[rm]
+		cmd.dest = regTable[rm<<1|word]
 	case 0b00:
-		cmd.dest = sourceAddrTable[rm]
+		if rm == 0b110 {
+			// direct address
+			dataLen = 2
+			disp = parseUintFromBytes(bytes[2:3])
+			cmd.dest = strconv.FormatUint(disp, 10)
+			data := parseUintFromBytes(bytes[3:4])
+			if word == 0b1 {
+				disp = parseUintFromBytes([]byte{bytes[3], bytes[2]})
+				fmt.Printf("direct address disp = %d\n", disp)
+				cmd.dest = strconv.FormatUint(disp, 10)
+				isWord = true
+				data = parseUintFromBytes(bytes[4:5])
+				dataLen = 3
+				if s == 0b0 {
+					data = parseUintFromBytes([]byte{bytes[4], bytes[5]})
+					dataLen = 4
+				}
+			} else {
+				isByte = true
+			}
+			cmd.source = strconv.FormatUint(data, 10)
+			// data = parseUintFromBytes(bytes[2:3])
+		} else {
+			cmd.dest = sourceAddrTable[rm]
+		}
 	case 0b01:
 		dataLen = 2
 		disp = parseUintFromBytes(bytes[2:3])
-		cmd.dest = "[" + sourceAddrTable[rm] + " + " + strconv.FormatUint(disp, 10) + "]"
+		cmd.dest = sourceAddrTable[rm] + " + " + strconv.FormatUint(disp, 10)
 		data := parseUintFromBytes(bytes[3:4])
 		if word == 0b1 {
-			cmd.dest = "word " + cmd.dest
+			isWord = true
 			if s == 0b0 {
 				data = parseUintFromBytes([]byte{bytes[4], bytes[3]})
 				dataLen = 3
 			}
+		} else {
+			isByte = true
 		}
 		cmd.source = strconv.FormatUint(data, 10)
 	case 0b10:
 		disp = parseUintFromBytes([]byte{bytes[3], bytes[2]})
-		cmd.dest = "[" + sourceAddrTable[rm] + " + " + strconv.FormatUint(disp, 10) + "]"
+		cmd.dest = sourceAddrTable[rm] + " + " + strconv.FormatUint(disp, 10)
 		data := parseUintFromBytes(bytes[4:5])
 		dataLen = 3
 		if word == 0b1 {
-			cmd.dest = "word " + cmd.dest
+			isWord = true
 			if s == 0b0 {
 				data = parseUintFromBytes([]byte{bytes[5], bytes[4]})
 				dataLen = 4
 			}
+		} else {
+			isByte = true
 		}
 		cmd.source = strconv.FormatUint(data, 10)
 	}
-	// if mod == 0b11 {
-	// } else {
-	// 	if word == 0b1 {
-	// 		cmd.dest = "word " + cmd.dest
-	// 	} else {
-	// 		cmd.dest = "byte " + cmd.dest
-	// 	}
-	// }
-
-	fmt.Printf("immediate add to reg cmd='%s', word=%b, reg=%b len=%d\n", cmd.Str(), word, rm, dataLen)
+	if mod != 0b11 {
+		if word == 0b0 {
+			isByte = true
+		}
+		if isWord {
+			cmd.dest = "word [" + cmd.dest + "]"
+		} else if isByte {
+			cmd.dest = "byte [" + cmd.dest + "]"
+		} else {
+			cmd.dest = "[" + cmd.dest + "]"
+		}
+	}
+	fmt.Printf("immediate to reg cmd='%s', word=%b, reg=%b len=%d\n", cmd.Str(), word, rm, dataLen)
 	return cmd, dataLen
 }
 
@@ -176,6 +204,20 @@ func parseRegToMemAndDisp(opcode, word, direction, rm, reg byte, disp []byte) co
 	return cmd
 }
 
+func parseImmediateToAcc(b []byte, cmdName string) (command, int) {
+	word := b[0] & 0b1
+	data := b[1:2]
+	if word == 0b1 {
+		data = []byte{b[2], b[1]}
+	}
+	cmd := command{
+		cmd:    cmdName,
+		dest:   regTable[word],
+		source: strconv.FormatUint(parseUintFromBytes(data), 10),
+	}
+	return cmd, len(data)
+}
+
 func parseRegToReg(opcode, word, direction, rm, reg byte) command {
 	cmd := command{
 		cmd:    opcodeTable[opcode],
@@ -186,6 +228,11 @@ func parseRegToReg(opcode, word, direction, rm, reg byte) command {
 	if direction == 0b1 {
 		cmd.dest, cmd.source = cmd.source, cmd.dest
 	}
+	// parsing [00101000 11100000 00101101 11101000 00000011 00101100] bytes
+	// reg to reg cmd='sub al, ah', word=0, reg=100
+	//
+	// parsing [00101101 11101000 00000011 00101100 11100010 00101100] bytes
+	// reg to reg cmd='mov ax, bp', word=1, reg=101
 	fmt.Printf("reg to reg cmd='%s', word=%b, reg=%b\n", cmd.Str(), word, reg)
 	return cmd
 }
@@ -193,15 +240,6 @@ func parseRegToReg(opcode, word, direction, rm, reg byte) command {
 func parseCommand(bytes []byte) (command, []byte) {
 
 	fmt.Printf("parsing %08b bytes\n", bytes[:6])
-	if bytes[0]>>4 == 0b1011 {
-		// immediate to register case
-		cmd, datalen := parseImmediateToReg(bytes[0]>>4, bytes)
-		return cmd, bytes[datalen+1:]
-	}
-	if bytes[0]>>2 == 0b100000 {
-		cmd, datalen := parseImmediateAddToReg(bytes)
-		return cmd, bytes[datalen+2:]
-	}
 
 	opcode := bytes[0] >> 2
 	// mov rm to/from register
@@ -210,25 +248,82 @@ func parseCommand(bytes []byte) (command, []byte) {
 	direction := (bytes[0] >> 1) & 1
 	rm := bytes[1] & 0b111
 	reg := (bytes[1] >> 3) & 0b111
-	if mod == 0b11 {
-		// reg to reg
-		cmd := parseRegToReg(opcode, word, direction, rm, reg)
-		return cmd, bytes[2:]
+
+	switch {
+	case bytes[0]>>4 == 0b1011:
+		{
+			// immediate to register case
+			cmd, datalen := parseImmediateToReg(bytes[0]>>4, bytes)
+			return cmd, bytes[datalen+1:]
+		}
+	case bytes[0]>>2 == 0b100000:
+		{
+			cmd, datalen := parseImmediateAddToReg(bytes)
+			return cmd, bytes[datalen+2:]
+		}
+	case bytes[0]>>1 == 0b0000010:
+		{
+			//immediate add to accumulator
+			cmd, dataLen := parseImmediateToAcc(bytes, "add")
+			return cmd, bytes[dataLen+1:]
+		}
+	case bytes[0]>>1 == 0b0010110:
+		{
+			//immediate sub to accumulator
+			cmd, dataLen := parseImmediateToAcc(bytes, "sub")
+			return cmd, bytes[dataLen+1:]
+		}
+	case bytes[0]>>1 == 0b0011110:
+		{
+			//immediate sub to accumulator
+			cmd, dataLen := parseImmediateToAcc(bytes, "sub")
+			return cmd, bytes[dataLen+1:]
+		}
+	case mod == 0b11:
+		{
+			// reg to reg
+			cmd := parseRegToReg(opcode, word, direction, rm, reg)
+			return cmd, bytes[2:]
+		}
+
+	case mod == 0b00:
+		{
+			cmd := parseRegToMem(opcode, word, direction, rm, reg)
+			return cmd, bytes[2:]
+		}
+	case mod == 0b01:
+		{
+			// to reg from mem + 8 bit displacement
+			cmd := parseRegToMemAndDisp(opcode, word, direction, rm, reg, bytes[2:3])
+			return cmd, bytes[3:]
+		}
+	case mod == 0b10:
+		{
+			// to reg from mem + 16 bit displacement
+			cmd := parseRegToMemAndDisp(opcode, word, direction, rm, reg, bytes[2:4])
+			return cmd, bytes[4:]
+		}
 	}
-	if mod == 0b00 {
-		cmd := parseRegToMem(opcode, word, direction, rm, reg)
-		return cmd, bytes[2:]
-	}
-	if mod == 0b01 {
-		// to reg from mem + 8 bit displacement
-		cmd := parseRegToMemAndDisp(opcode, word, direction, rm, reg, bytes[2:3])
-		return cmd, bytes[3:]
-	}
-	if mod == 0b10 {
-		// to reg from mem + 16 bit displacement
-		cmd := parseRegToMemAndDisp(opcode, word, direction, rm, reg, bytes[2:4])
-		return cmd, bytes[4:]
-	}
+
+	// if mod == 0b11 {
+	// 	// reg to reg
+	// 	cmd := parseRegToReg(opcode, word, direction, rm, reg)
+	// 	return cmd, bytes[2:]
+	// }
+	// if mod == 0b00 {
+	// 	cmd := parseRegToMem(opcode, word, direction, rm, reg)
+	// 	return cmd, bytes[2:]
+	// }
+	// if mod == 0b01 {
+	// 	// to reg from mem + 8 bit displacement
+	// 	cmd := parseRegToMemAndDisp(opcode, word, direction, rm, reg, bytes[2:3])
+	// 	return cmd, bytes[3:]
+	// }
+	// if mod == 0b10 {
+	// 	// to reg from mem + 16 bit displacement
+	// 	cmd := parseRegToMemAndDisp(opcode, word, direction, rm, reg, bytes[2:4])
+	// 	return cmd, bytes[4:]
+	// }
 	panic("code not supported")
 }
 
