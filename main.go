@@ -54,6 +54,39 @@ var sourceAddrTable = map[byte]string{
 	0b111: "bx",
 }
 
+var jumpTable = map[byte]string{
+	0b01110101: "jnz",
+	0b01110100: "je",
+	0b01111100: "jl",
+	0b01111110: "jle",
+	0b01110010: "jb",
+	0b01110110: "jbe",
+	0b01111010: "jp",
+	0b01110000: "jo",
+	0b01111000: "js",
+	// 0b01110101: "jne",
+	0b01111101: "jnl",
+	0b01111111: "jg",
+	0b01110011: "jnb",
+	0b01110111: "ja",
+	0b01111011: "jnp",
+	0b01110001: "jno",
+	0b01111001: "jns",
+	0b11100010: "loop",
+	0b11100001: "loopz",
+	0b11100000: "loopnz",
+	0b11100011: "jcxz",
+}
+
+func parseJump(jmpName string, value byte) command {
+	cmd := command{
+		cmd:    jmpName,
+		dest:   strconv.Itoa(int(int8(value))),
+		source: "",
+	}
+	return cmd
+}
+
 func parseImmediateAddToReg(bytes []byte) (command, int) {
 	word := bytes[0] & 1
 	s := bytes[0] >> 1 & 1
@@ -63,13 +96,6 @@ func parseImmediateAddToReg(bytes []byte) (command, int) {
 	dataLen := 1
 	cmdBytes := bytes[1] >> 3 & 0b111
 	isWord, isByte := false, false
-
-	// parsing [10000000 00111111 00100010 10000011 00111110 11100010] bytes
-	// immediate add to reg cmd='cmp byte [bx], 34', word=0, reg=111 len=1
-	//
-	// parsing [10000011 00111110 11100010 00010010 00011101 00111011] bytes
-	// immediate add to reg cmd='cmp [bp], 226', word=1, reg=110 len=1
-
 	cmd := command{immediateOpTable[cmdBytes], dataStr, sourceAddrTable[rm]}
 	var disp uint64
 	switch mod {
@@ -249,6 +275,8 @@ func parseCommand(bytes []byte) (command, []byte) {
 	rm := bytes[1] & 0b111
 	reg := (bytes[1] >> 3) & 0b111
 
+	val, ok := jumpTable[bytes[0]]
+
 	switch {
 	case bytes[0]>>4 == 0b1011:
 		{
@@ -276,8 +304,13 @@ func parseCommand(bytes []byte) (command, []byte) {
 	case bytes[0]>>1 == 0b0011110:
 		{
 			//immediate sub to accumulator
-			cmd, dataLen := parseImmediateToAcc(bytes, "sub")
+			cmd, dataLen := parseImmediateToAcc(bytes, "cmp")
 			return cmd, bytes[dataLen+1:]
+		}
+	case ok:
+		{
+			cmd := parseJump(val, bytes[1])
+			return cmd, bytes[2:]
 		}
 	case mod == 0b11:
 		{
