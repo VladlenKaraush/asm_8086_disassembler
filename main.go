@@ -98,9 +98,15 @@ func parseImmediateAddToReg(bytes []byte) (command, int) {
 	isWord, isByte := false, false
 	cmd := command{immediateOpTable[cmdBytes], dataStr, sourceAddrTable[rm]}
 	var disp uint64
+
 	switch mod {
 	case 0b11:
 		cmd.dest = regTable[rm<<1|word]
+		if word == 0b1 && s == 0b0 {
+			data := parseUintFromBytes([]byte{bytes[3], bytes[2]})
+			cmd.source = strconv.Itoa(int(data))
+			dataLen = 2
+		}
 	case 0b00:
 		if rm == 0b110 {
 			// direct address
@@ -170,7 +176,7 @@ func parseImmediateAddToReg(bytes []byte) (command, int) {
 			cmd.dest = "[" + cmd.dest + "]"
 		}
 	}
-	fmt.Printf("immediate to reg cmd='%s', word=%b, reg=%b len=%d\n", cmd.Str(), word, rm, dataLen)
+	fmt.Printf("immediate to reg add cmd='%s', word=%b, reg=%b len=%d\n", cmd.Str(), word, rm, dataLen)
 	return cmd, dataLen
 }
 
@@ -207,7 +213,7 @@ func parseRegToMem(opcode, word, direction, rm, reg byte) command {
 	if direction == 0b0 {
 		cmd.source, cmd.dest = cmd.dest, cmd.source
 	}
-	fmt.Printf("reg to/from effective address cmd='%s', word=%b, reg=%b opcode=%06b\n", cmd.Str(), word, reg, opcode)
+	fmt.Printf("reg to/from effective address to mem cmd='%s', word=%b, reg=%b opcode=%06b\n", cmd.Str(), word, reg, opcode)
 	return cmd
 }
 
@@ -254,11 +260,6 @@ func parseRegToReg(opcode, word, direction, rm, reg byte) command {
 	if direction == 0b1 {
 		cmd.dest, cmd.source = cmd.source, cmd.dest
 	}
-	// parsing [00101000 11100000 00101101 11101000 00000011 00101100] bytes
-	// reg to reg cmd='sub al, ah', word=0, reg=100
-	//
-	// parsing [00101101 11101000 00000011 00101100 11100010 00101100] bytes
-	// reg to reg cmd='mov ax, bp', word=1, reg=101
 	fmt.Printf("reg to reg cmd='%s', word=%b, reg=%b\n", cmd.Str(), word, reg)
 	return cmd
 }
@@ -337,31 +338,85 @@ func parseCommand(bytes []byte) (command, []byte) {
 			return cmd, bytes[4:]
 		}
 	}
-
-	// if mod == 0b11 {
-	// 	// reg to reg
-	// 	cmd := parseRegToReg(opcode, word, direction, rm, reg)
-	// 	return cmd, bytes[2:]
-	// }
-	// if mod == 0b00 {
-	// 	cmd := parseRegToMem(opcode, word, direction, rm, reg)
-	// 	return cmd, bytes[2:]
-	// }
-	// if mod == 0b01 {
-	// 	// to reg from mem + 8 bit displacement
-	// 	cmd := parseRegToMemAndDisp(opcode, word, direction, rm, reg, bytes[2:3])
-	// 	return cmd, bytes[3:]
-	// }
-	// if mod == 0b10 {
-	// 	// to reg from mem + 16 bit displacement
-	// 	cmd := parseRegToMemAndDisp(opcode, word, direction, rm, reg, bytes[2:4])
-	// 	return cmd, bytes[4:]
-	// }
 	panic("code not supported")
+}
+
+// func execMovs(cmds []command) {
+// 	fmt.Println("executing movs")
+// 	regs := map[string]int{
+// 		"ax": 0, "cx": 0, "dx": 0, "bx": 0, "sp": 0, "bp": 0, "si": 0, "di": 0,
+// 	}
+// 	for _, cmd := range cmds {
+// 		if val, ok := regs[cmd.source]; ok {
+// 			regs[cmd.dest] = val
+// 		} else {
+// 			val, _ := strconv.Atoi(cmd.source)
+// 			regs[cmd.dest] = val
+// 		}
+// 	}
+// 	fmt.Println(regs)
+// }
+
+func setFlags(val int, flags map[string]bool) {
+	switch true {
+	case val == 0:
+		flags["z"] = true
+		flags["s"] = false
+		break
+	case val < 0:
+		flags["z"] = false
+		flags["s"] = true
+	case val > 0:
+		flags["z"] = false
+		flags["s"] = true
+	}
+}
+
+func (cmd command) exec(regs map[string]int, flags map[string]bool) {
+	var sourceVal, newVal int
+	if regVal, ok := regs[cmd.source]; ok {
+		sourceVal = regVal
+	} else {
+		immediateVal, _ := strconv.Atoi(cmd.source)
+		sourceVal = immediateVal
+	}
+	switch cmd.cmd {
+	case "mov":
+		newVal = sourceVal
+		setFlags(newVal, flags)
+	case "add":
+		newVal = regs[cmd.dest] + sourceVal
+		setFlags(newVal, flags)
+	case "cmp":
+		newVal = regs[cmd.dest]
+		setFlags(regs[cmd.dest]-sourceVal, flags)
+	case "sub":
+		newVal = regs[cmd.dest] - sourceVal
+		setFlags(newVal, flags)
+	}
+	regs[cmd.dest] = newVal
+}
+
+func execCommands(cmds []command) {
+	fmt.Println("executing commands")
+	regs := map[string]int{
+		"ax": 0, "cx": 0, "dx": 0, "bx": 0, "sp": 0, "bp": 0, "si": 0, "di": 0,
+	}
+	flags := map[string]bool{
+		"s": false, "z": false,
+	}
+	for _, cmd := range cmds {
+		cmd.exec(regs, flags)
+		fmt.Printf("cmd = %v, regs = %v, flags = %v\n", cmd, regs, flags)
+	}
 }
 
 func main() {
 	filename := os.Args[1]
+	var exec string
+	if len(os.Args) > 2 {
+		exec = os.Args[2]
+	}
 	bytes, _ := os.ReadFile(filename)
 	fmt.Printf("input bytes = %b\n", bytes)
 
@@ -378,5 +433,9 @@ func main() {
 	}
 	for _, cmd := range commands {
 		fmt.Printf("%s\n", cmd.Str())
+	}
+
+	if exec == "--exec" {
+		execCommands(commands)
 	}
 }
