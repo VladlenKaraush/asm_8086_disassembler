@@ -7,17 +7,6 @@ import (
 	"strconv"
 )
 
-type command struct {
-	cmd    string
-	source string
-	dest   string
-	len    int
-}
-
-func (c *command) Str() string {
-	return fmt.Sprintf("%s %s, %s (len:%s)", c.cmd, c.dest, c.source, strconv.Itoa(c.len))
-}
-
 var opcodeTable = map[byte]string{
 	0b000000: "add",
 	0b100000: "add",
@@ -77,6 +66,40 @@ var jumpTable = map[byte]string{
 	0b11100001: "loopz",
 	0b11100000: "loopnz",
 	0b11100011: "jcxz",
+}
+
+type command struct {
+	cmd    string
+	source string
+	dest   string
+	len    int
+}
+
+type state struct {
+	regs     map[string]int
+	flags    map[string]bool
+	memory   []byte
+	commands []command
+	ip       int // instruction pointer
+}
+
+func initState(cmds []command) state {
+	state := state{
+		regs: map[string]int{
+			"ax": 0, "cx": 0, "dx": 0, "bx": 0, "sp": 0, "bp": 0, "si": 0, "di": 0,
+		},
+		flags: map[string]bool{
+			"s": false, "z": false,
+		},
+		memory:   make([]byte, 65536),
+		ip:       0,
+		commands: cmds,
+	}
+	return state
+}
+
+func (c *command) Str() string {
+	return fmt.Sprintf("%s %s, %s (len:%s)", c.cmd, c.dest, c.source, strconv.Itoa(c.len))
 }
 
 func parseJump(jmpName string, value byte) command {
@@ -347,22 +370,6 @@ func parseCommand(bytes []byte) (command, []byte) {
 	panic("code not supported")
 }
 
-// func execMovs(cmds []command) {
-// 	fmt.Println("executing movs")
-// 	regs := map[string]int{
-// 		"ax": 0, "cx": 0, "dx": 0, "bx": 0, "sp": 0, "bp": 0, "si": 0, "di": 0,
-// 	}
-// 	for _, cmd := range cmds {
-// 		if val, ok := regs[cmd.source]; ok {
-// 			regs[cmd.dest] = val
-// 		} else {
-// 			val, _ := strconv.Atoi(cmd.source)
-// 			regs[cmd.dest] = val
-// 		}
-// 	}
-// 	fmt.Println(regs)
-// }
-
 func setFlags(val int, flags map[string]bool) {
 	switch true {
 	case val == 0:
@@ -376,6 +383,10 @@ func setFlags(val int, flags map[string]bool) {
 		flags["z"] = false
 		flags["s"] = true
 	}
+}
+
+func (s state) execCmd(cmd command) {
+
 }
 
 func (cmd command) exec(regs map[string]int, flags map[string]bool) int {
@@ -419,37 +430,18 @@ func (cmd command) exec(regs map[string]int, flags map[string]bool) int {
 	return jump
 }
 
-func execCommands(cmds []command) {
-
-	fmt.Println("executing commands")
-
-	regs := map[string]int{
-		"ax": 0, "cx": 0, "dx": 0, "bx": 0, "sp": 0, "bp": 0, "si": 0, "di": 0,
-	}
-	flags := map[string]bool{
-		"s": false, "z": false,
-	}
-	ind := 0
-
-	for ind < len(cmds) {
-		cmd := cmds[ind]
-		offset := cmd.exec(regs, flags)
-		// fmt.Printf("returned offset = %d\n", offset)
+func (s *state) executeCommands() {
+	for s.ip < len(s.commands) {
+		cmd := s.commands[s.ip]
+		offset := cmd.exec(s.regs, s.flags)
 		for offset < 0 {
-			cmd := cmds[ind]
-			// fmt.Printf("offsetting jump, cmd = %v, offset = %d, ind = %d\n", cmd, offset, ind)
+			cmd := s.commands[s.ip]
 			offset += cmd.len
-			ind -= 1
+			s.ip -= 1
 		}
-		ind += 1
-		// fmt.Printf("cmd = %v, regs = %v, flags = %v\n", cmd, regs, flags)
+		s.ip += 1
 	}
-	fmt.Printf("final state: regs = %v, flags = %v\n", regs, flags)
-
-	// for _, cmd := range cmds {
-	// 	cmd.exec(regs, flags)
-	// 	fmt.Printf("cmd = %v, regs = %v, flags = %v\n", cmd, regs, flags)
-	// }
+	fmt.Printf("final state: regs = %v, flags = %v\n", s.regs, s.flags)
 }
 
 func main() {
@@ -481,6 +473,7 @@ func main() {
 	}
 
 	if exec == "--exec" {
-		execCommands(commands)
+		state := initState(commands)
+		state.executeCommands()
 	}
 }
